@@ -1,0 +1,145 @@
+---
+title: "Practice 4: HMM"
+author: "José Rodríguez Maldonado"
+date: "February 2019"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    theme: simplex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Part A
+## Exercise 1
+
+**Read	the	documentation	of	the	HMM	R-package,	in	particular	in	relationship	to	the	viterbi	function.**
+
+Looking at the package information we see that the Viterbi-algorithm computes the most probable path of states for a sequence of observations for a given Hidden Markov Model.
+
+## Exercise 2
+
+**Use	the	HMM	package	to	reproduce	the	results	of	the	example	analyzed	in	class	 of	the	application	of	the	Viterbi	algorithm,	extracting	the	information	needed	from	the	following	diagram.	(Hint:	It	is	necessary	to	modify	the	viterbi	function	of	the	HMM	package	in	order	to	use	the	log2	instead	of	log10	function,	and	also	in	order	to	print	the	values	of	the	probability	of	the	H	and	L	states	at	each	iteration	to	verify	the	correct	functioning	of	the	algorithm).**
+
+Here we set the different matrixes.
+```{r echo=FALSE}
+load(file="log_2_vit.RData")
+```
+```{r}
+library("HMM")
+states <- c("H","L")
+targetProb <- c(0.5, 0.4)
+outlierProb <- c(0.5,0.6 )
+transProb <- matrix(c(targetProb, outlierProb), 2)
+elements <- c("A","C","G","T")
+HStateProb <- c(0.2, 0.3,0.3, 0.2)
+LStateProb <- c(0.3, 0.2,0.2, 0.3)
+emissProb <- matrix(c(HStateProb,LStateProb), 2, byrow = T) 
+
+hmm <- initHMM(States = states, Symbols = elements, transProbs=transProb, emissionProbs = emissProb)
+
+print(hmm)
+
+simhmm <- simHMM(hmm, 12)
+
+simulated <- data.frame(state=simhmm$states, element=simhmm$observation)
+
+simulated
+```
+To do the prediction, we are going to use the viterbi algorithm. The changes will be setted with the edit function. This functions opens a script with the functions where we can changed, and when we are finish we can save the modified function into a new variable.
+```{r eval=FALSE}
+viterbi_log2 <- edit(viterbi)
+```
+
+Here we execute the Viterbi algorithm.
+
+```{r}
+#Predict
+
+
+testElements <- c("G","G","C","A","C","T","G","A","A")
+
+
+stateViterbi <- viterbi_log2(hmm, testElements)
+
+predState <- data.frame(Element=testElements, State=stateViterbi)
+
+print(predState)
+
+
+```
+As we can see, the results are exactly as the ones expected.
+
+
+
+##Exercise 3
+**Apply	the	HMM	package	to	the	following	problem	to	obtain	the	most	probable	sequence	of	hidden	states	for	the	observed	sequence		CCT:**
+
+As we did before, we start generating the different matrixes, and then we compute the viterbi algorithm
+
+```{r}
+states <- c("S1","S2", "S3")
+S1Prob <- c(0.25, 0.25,0.5)
+S2Prob <- c(0.5,0.25, 0.5 )
+S3Prob <- c(0.25,0.5, 0 )
+transProb <- matrix(c(S1Prob, S2Prob, S3Prob), 3)
+elements <- c("A","C","T","G")
+S1StateProb <- c(1, 0,0, 0)
+S2StateProb <- c(0.25, 0.5,0, 0.25)
+S3StateProb <- c(0.25, 0.25,0.25, 0.25)
+emissProb <- matrix(c(S1StateProb,S2StateProb,S3StateProb ), 3, byrow = T) 
+startProbs <-c(0.25, 0.5, 0.25)
+
+hmm <- initHMM(States = states, Symbols = elements, transProbs=transProb, emissionProbs = emissProb, startProbs = startProbs)
+
+print(hmm)
+
+testElements <- c("C","C","T")
+
+
+stateViterbi <- viterbi_log2(hmm, testElements)
+
+predState <- data.frame(Element=testElements, State=stateViterbi)
+
+print(predState)
+```
+
+
+#PART B
+
+**Read	the	work	by	Krogh	et	al.	[P3-R4]	entitled	A	hidden	Markov	model	that	finds	genes	in	E.coli	DNA,	and	write	with	your	own	words	a	summary,	shorter	than	one	page,	explaning	the	context	and	objectives	of	the	work,	the	methods	used	and	the	results	obtained.	Give	your	opinion	about	the	quality	and	probable	impact	of	the	work**
+
+
+In this paper we see some of the topic that we saw in class the other day. The use of HMM to find regions of interest in the genome. In particular, this paper focuses on finding protein coding genes in E.coli DNA using E.coll genome DNA sequence from the EcoSeq6 database. The states are being modeled by codos for this case, and their frequecy.
+
+The predictive power of the method was tested in terms of finding whole genes in the genome. As we saw, the HMM parser predicts:
+
+- About 80% of the genes correctly
+- 4.5-6% almost correctly
+- 5% of the genes were completely missed (genes who has unusual codon statistics)
+- Of the remaining roughly 10% of the genes, the parser makes fairly good predictions in about half of these instances
+
+By the end we get about 90% of useful predictions.
+
+**Methods**
+
+- **A parser with simple intergenic model**: Use a collection of ring all conected to a central state, each can have one or more than one HMMs.
+
+- **Gene model**, the key is zero-th order codon statistics were almost as good as higher order models.
+- **A parser with a complex intergenic modell**, we have the same as in the simple, the start and stop codon, but in this case we add more parts.
+- **Models for overlapping genes**, we have a HMM for the TAATG and TGATG with high probability and the rest very low. Another for overlaps of size 4 which are regular expressión, and the rest are post-processed after.
+- **Parameter estimation**, they have an almost automatied way of get all the different parameters except one.
+- **Post processing** tell us about how do they process the results after predicting in both directions.
+
+**My opinion**
+
+Despite Markov models seems very interesting for me I strill can see some complains abount them. One of the most curious ones is that markow models take into account the las state to predict the next one, but it doesn't take into account more variables like for example the time spend in a specific state. 
+
+Also, I have seen in this paper that big markov models can be really hard to understand.
+
+Over all, I think, as we saw in the paper, that HMM seems to be very interesting and seems to have plenty room for improvement, as we can keep on refining the models.

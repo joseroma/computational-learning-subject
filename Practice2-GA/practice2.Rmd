@@ -1,0 +1,654 @@
+---
+title: "Practice 2 - Feature	Selection	using	Genetic	algorithms."
+author: "José Rodríguez Maldonado"
+date: "January 2019"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: simplex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(7)
+library(RWeka)
+```
+
+## Introduction
+
+The	idea	of	this	practice	is	to	analyze	the	application	of	genetic	algorithm	for	the	feature	selection	problem	using	a	gene	expression	data	set	for	the	case	of	AML-ALL	Leukemia	disease. Is critical to distinguish ALL from AML in order to give a successful treatment.
+
+## Part 1
+
+**Apply a filter and a wrapper method for selection of features from the provided data set (Reuse your code from "Minería de datos"). Select 100-200 features from the Leukemia data set using the selected methods (for example correlation and SFS). We are going to use these subset of features for working with GAs.**
+
+I have had some dificulty finding my old scripts, it's a bit messy. So I will do it again. We will start loading the data. I have set the set the seed to 7, so the experiment can be repeated.
+```{r echo=FALSE}
+load( file=".datos/data.RData")
+```
+```{r eval=FALSE}
+
+# ensure the results are repeatable
+set.seed(7)
+library(RWeka)
+test <- read.arff("ALL-AML_Leukemia 2/ALL-AML_test.arff")
+train <- read.arff("ALL-AML_Leukemia 2/ALL-AML_train.arff")
+```
+
+
+###Filter
+Once we have the data, we get into the filter method. The FSelector package will be used for this task. In order to select the features, a 3-step function was implemented. 
+
+- Create the formula
+- Get the importance of the variables
+- Select the 200 best ones
+
+The different results obtained depend on the function used to evaluate the importance of the variables. I am going to use just 3 filter methods:
+
+- **A chi-squared test**: is used to determine whether there is a significant difference between the expected frequencies and the observed frequencies in one or more categories.
+- **Random forests**
+- **Correlation**
+```{r echo=FALSE}
+load( file=".datos/chiandforest.RData")
+
+load(file=".datos/res-cor.RData")
+```
+
+```{r eval=FALSE}
+library(mlbench)
+library(caret)
+library(FSelector)
+
+filter.Method <-function(data, num ) { 
+  
+  # We use the mean decrease in accuracy to select the variables
+  formula<-as.formula(paste("myclass",".",sep="~"))
+  # Chi-squared
+  weigths_chi<-chi.squared(formula, data)
+  # Random.forest
+  weigths_forest<-random.forest.importance(formula, data, importance.type = 1)
+  # We get the variables that we want
+  best_200_chi<-cutoff.k(weigths_chi, num)
+  best_200_forest<-cutoff.k(weigths_forest, num)
+  
+  return(list(chi = best_200_chi, forest  = best_200_forest))
+}
+
+corr<-function(data, num.feat, perc) { 
+
+  m<-cor(data[,1:ncol(data)-1])
+  corr.variab <- findCorrelation(m, cutoff=perc)
+  cutoff<-corr.variab[1:num.feat]
+  imp.features<-sapply(cutoff, function(i) colnames(data)[i])
+  return(imp.features)
+}
+
+# AS I was told, we will select the 200 best variables
+res <- filter.Method(train, 200)
+res.cor<-corr( train, 200, 0.75)
+forest <- res$forest
+chi <- res$chi
+```
+
+Once we have the result, we can check whether the results are similar or not. Just as easy as check if the variables were ordered in the same way with this methods.
+```{r  code_folding: show}
+chi[1:10]==forest[1:10]
+```
+
+
+```{r}
+chi[1:10]==res.cor[1:10]
+```
+
+
+We can see that only agree a few variables. I think that it can be very interesting to check the AUC that we have training the same model with the different formulas calculated above.
+
+```{r eval=FALSE}
+library(pROC)
+library(nnet)
+library(FSelector)
+
+CrossVal<-function(all.data, k, formula, label.extra) {
+  
+  auc.glm<-list()
+  auc.nnet<-list()
+  cf<-createFolds(all.data$myclass, k=k)
+  
+  for(i in 1:k) {
+    test <-all.data[unlist(cf[i]),]
+    train <-all.data[-unlist(cf[i]),]
+    train$myclass <-as.factor(train$myclass)
+    test$myclass <-as.factor(test$myclass)
+    auc.glm<-c(auc.glm,get.models(formula, train, test, "log" )$auc);
+    auc.nnet<-c(auc.nnet,get.models(formula, train, test, "nnet")$auc);
+  }
+  
+  ## PLOT
+  res <- c(as.numeric(unlist(auc.glm)),as.numeric(unlist(auc.nnet)))
+  type <- c(rep("GLM", length(unlist(auc.glm))), rep("NNET", length(unlist(auc.nnet))))
+  data <- data.frame(num=res, type = type)
+  bp <- ggplot(data, aes(x=type, y=res)) + 
+  geom_boxplot(fill="gray")+
+  labs(title=label.extra,x="GLM vs NNET", y = "AUC")
+  bp + theme_classic()
+  
+  return(list(glm.mean=mean(unlist(auc.glm)), nnet.mean=mean(unlist(auc.nnet)), plot = bp))
+}
+all.data<-rbind(train,test) 
+
+rescrsw.chi<-CrossVal(all.data, k = 20, formula = as.simple.formula(paste(chi, collapse = "+"), "myclass"), label.extra = "CHI")
+rescrsw.forest<-CrossVal(all.data,k =20, formula =as.simple.formula(paste(forest, collapse = "+"), "myclass"), label.extra = "FOREST")
+rescrsw.corr<-CrossVal(all.data, k =20, formula =as.simple.formula(paste(res.cor, collapse = "+"), "myclass"), label.extra = "CORRELATION")
+
+
+```
+
+Hereunder, we can check the results obtained for the 20 cross validation.
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+#save(rescrsw.chi,rescrsw.forest,rescrsw.corr, file=".datos/CV-results.RData")
+load(".datos/CV-results.RData")
+
+```
+
+```{r message=FALSE, warning=TRUE}
+library(ggplot2)
+library(cowplot)
+plot_grid(rescrsw.chi$plot, rescrsw.forest$plot, rescrsw.corr$plot )
+
+```
+
+We can easely see the differences in the results generated by different formulas. For the GLM model, we are having good results. In particular, we have slightly better results in the forest method. In contrast for the neural networks we have a clear underfitting. It may be caused by the lack of data that we have. 
+
+###Wrapper
+
+Now, we are going to apply the wrapper methods. I am going to apply 2 of the wrapper methods that I used for "Mineria de datos":
+
+- Logistic regression
+- Neural networks
+
+I have decided to use this ones because they are faster than other methods like SVM.
+
+```{r eval=FALSE}
+library(FSelector)
+library(pROC)
+library(nnet)
+
+train$myclass <- as.factor(train$myclass)
+test$myclass <- as.factor(test$myclass)
+
+get.models <-function(formula, train, test, method ) {
+  
+  if(method == "log"){
+    model<-glm(formula, train, family=binomial("logit"))
+    estimation<-predict(model, newdata=test, type="response")
+  }
+  
+  if(method == "nnet"){
+    model<-nnet(formula,data=train, size=1, decay=0.2, maxit=3, trace=F)
+    estimation<-predict(model, newdata=test, type="raw")
+  }
+  
+  estimation<-round(estimation)
+         
+  roc<-roc(as.numeric(test$myclass), estimation, smooth=F, auc=T)
+  
+  auc <-roc$auc
+  
+  return(list(auc=auc,log=roc)) 
+}
+
+SW <- function(method, train, test) {
+  
+  cummulative.auc<-0
+  variables <-colnames(train)[colnames(train) != "myclass"] 
+  
+  for(level in 1:length(variables)) { 
+    best.auc<-0
+    for(var in variables) {
+      if(level==1){
+        att<-var
+      }else{
+        att<-c(var, cummulative.list)
+      } 
+      formula <-as.simple.formula(att,"myclass")
+      new.auc<-get.models(formula, train, test, method)$auc[1];
+      if(new.auc>best.auc) {
+        best.auc<-new.auc
+        best.vble<-var
+      }
+    }
+    variables<-variables[variables != best.vble]
+    
+    if(level==1){
+      cummulative.list<-best.vble
+      cumm.auc<-best.auc
+    }else{
+      cummulative.auc<-c(cummulative.auc, best.auc)
+      cummulative.list<-c(cummulative.list, best.vble)
+      cumm.auc<-cummulative.auc[level-1]
+    }
+    
+    if(length(cummulative.list)!=level || cumm.auc>best.auc[1] || length(cummulative.list)==100) break
+  }
+  
+  best.formula<-as.simple.formula(cummulative.list,"myclass")
+  
+  return(list(variables=cummulative.list, cummulative.auc=cummulative.auc, formula=best.formula))
+}
+
+sw.glm<-SW("log",train, test)
+sw.nnet<-SW("nnet",train, test)
+
+```
+
+If you execute this code, you could notice a warning  telling *glm.fit: fitted probabilities numerically 0 or 1 occurred*. No worries, what it means is exactly what it says. The warning message is telling you is that a perfect  fit is possible within the parametrisation of the model: 
+
+A probability P(Y=1)=0 is fitted to cases where the observed Y = 0; and a probability P(Y=1)=1 is fitted to cases where the observed Y = 1.
+```{r echo=FALSE}
+load(file=".datos/wrapperResults-glm-20.RData")
+load(file=".datos/wrapperResults-nnet-20.RData")
+```
+
+When we apply those functions, we get the following formulas as results:
+```{r}
+sw.glm$formula
+sw.nnet$formula
+```
+
+
+The first thing that strikes us is that we don't have 100 variables, as we specify in the function. Well, that occurs because during the execution of the algorithm, we get to a point where we don't have an increase in the accuracy, so the algorithm stops.
+
+```{r echo=FALSE}
+load(file=".datos/wrapper-CV.RData")
+```
+
+
+```{r eval=FALSE}
+res.cv.glm<-CrossVal(all.data, k = 20, formula = sw.glm$formula, label.extra = "WRAPPER GLM")
+res.cv.nnet<-CrossVal(all.data,k =20, formula =sw.nnet$formula, label.extra = "WRAPPER NNET")
+```
+```{r}
+library(cowplot)
+plot_grid(res.cv.glm$plot, res.cv.nnet$plot )
+```
+
+As we saw before, here we can double check that neuronal networks are not working well in this problem. In case we want to use neural networks for this problem, we have to tune it or generate artificial data, in order to solve the underfitting problem. We can also appreciate a curious fact, in the graphs we get that glm algorithm throws better results with the formula provided by the NNET wrapper. It's important to bring up that we got better results (in glm) for the wrapper methods than for the filter methods, as expected.
+
+For the second part of the practice we are going to reuse the formulas obtained by the filter algorithms, because the wrapper formulas are not large enough.
+
+##Part 2
+
+**The	idea	of	this	part	is	to	analyze	the	application	of	genetic	algorithm	for	the	feature	selection	problem	using	a	gene	expression	data	set	for	the	case	of	AML-ALL	Leukemia	disease. In	order	to	implement	a	Genetic	algorithm,	a	prediction	function	is	needed	in	order	to	evaluate	the	fitness	function.	Use	a	simple	predictor	function	like LDA,QDA	or	logistic	regression	(each	group	will	test	one	of	the	methods) (See	Reference	[P3-R5]).	You	can	use	the	results	of	this	work	for	compare	with	yours. **
+
+My fitness function is the same as the one that we can find in pseudo code in the slides.
+
+
+```{r eval=FALSE}
+library(GA)
+library(MASS)
+library(FSelector)
+library(mclust)
+
+
+fitness.penalty <- function(x) {
+ x<-c(as.integer(paste(x, sep = ",")))
+ result = -1
+ x[length(x)] <- 0
+ if (sum(x)> 1) {
+   z <- lda(as.simple.formula(colnames(fit.data$train)[x==1], "myclass"), fit.data$train)
+   Pr <- predict(z, fit.data$test)$class
+   result=-classError(fit.data$test$myclass,Pr)$errorRate - 0.7*sum(x)/400
+ }
+ return(result)
+}
+
+fitness.no.penalty <- function(x) {
+ x<-c(as.integer(paste(x, sep = ",")))
+ result = -1
+ x[length(x)] <- 0
+ if (sum(x)> 1) {
+   z <- lda(as.simple.formula(colnames(fit.data$train)[x==1], "myclass"), fit.data$train)
+   Pr <- predict(z, fit.data$test)$class
+   result=-classError(fit.data$test$myclass,Pr)$errorRate
+ }
+ return(result)
+}
+
+indices<-as.vector(rbinom(ncol(train), 1, 0.1))
+indices1<-as.vector(rbinom(ncol(train), 1, 0.25))
+indices2<-as.vector(rbinom(ncol(train), 1, 0.5))
+indices3<-as.vector(rbinom(ncol(train), 1, 0.75))
+indices4<-as.vector(rbinom(ncol(train), 1, 0.99))
+debug(fitness.penalty)
+fit1<-fitness.penalty(x = indices, fit.data)
+fit2<-fitness.penalty(x = indices1, fit.data)
+fit3<-fitness.penalty(x = indices2, fit.data)
+fit4<-fitness.penalty(x = indices3, fit.data)
+fit5<-fitness.penalty(x = indices4, fit.data)
+
+```
+```{r echo=FALSE}
+load(file=".datos/fit-examples.RData")
+```
+Here I did some tests over the fitness function. Each chromosome has more ones than the previous one. The idea is to cover different options in order to ensure that the fitness function will work, no matter if chromosome given.
+```{r}
+cat("0.1% of ones ", fit1,"\n0.25% of ones", fit2,"\n0.5% of ones", fit3,"\n0.75% of ones", fit4,"\n0.99% of ones", fit5 )
+```
+
+
+We can see, as expected, that as we add ones to the chromosome given, we get a higher fitness value. That occurs due to the effect of the penalty added [*- 0.7\*sum(indices)/400*].
+
+**Use	a	filter	and/or	a	wrapper	method	(Correlation/SFS)	to	reduce	the	number	of	input	variables	from	7129	to	a	number	that	permits	you	to	run	the	GA	algorithm.**
+
+
+As I said before, I am going to use several filter methods.
+
+
+Here, I leave a short function that can reduce a data.frame according to it's formula. That I will use after.
+
+```{r}
+
+reduce<-function(variables, data){
+  dat<-list()
+  myclass<-data$train$myclass
+  dat$train<-data$train[,res.cor]
+  dat$train<-cbind(dat$train, myclass)
+  myclass<-data$test$myclass
+  dat$test<-data$test[,res.cor]
+  dat$test<-cbind(dat$test, myclass)
+  return(dat)
+}
+
+```
+
+
+**Play	with	the	parameters	of	the	GA	function	to	optimize	operation	of	the	genetic	algorithm.	Use	a	penalty	term	for	reducing the	number	of	features,	and	analyze	that	is	indeed	working.**
+
+First of all, I think that it is very interesting to check the different results that we can get regarding the different formulas obtained before in the filter methods. We are going to use the function generated before to reduce the data set  with and without penalty.
+
+```{r echo=FALSE}
+load(".datos/first-GA.RData")
+load(file=".datos/no-penalty-formulas.RData")
+```
+
+
+```{r eval=FALSE}
+fit.data<-list(train=train, test=test)
+fit.data<-reduce(res.cor, fit.data)
+GA.corr.no<-ga("binary", fitness= fitness.no.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 30, maxiter = 180, parallel = TRUE)
+fit.data<-reduce(chi, fit.data)
+GA.chi.no<-ga("binary", fitness= fitness.no.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 30, maxiter = 180, parallel = TRUE)
+fit.data<-reduce(forest, fit.data)
+GA.forest.no<-ga("binary", fitness= fitness.no.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 30, maxiter = 180, parallel = TRUE)
+
+```
+```{r eval=FALSE}
+fit.data<-list(train=train, test=test)
+fit.data<-reduce(res.cor, fit.data)
+GA.corr<-ga("binary", fitness= fitness.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 30, maxiter = 180, parallel = TRUE)
+fit.data<-reduce(chi, fit.data)
+GA.chi<-ga("binary", fitness= fitness.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 30, maxiter = 180, parallel = TRUE)
+fit.data<-reduce(forest, fit.data)
+GA.forest<-ga("binary", fitness= fitness.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 30, maxiter = 180, parallel = TRUE)
+
+```
+Here we have the result of applying the different formulas in the GA algorithm.
+
+- Correlation
+- Chi
+- Forest
+
+With penalty results:
+```{r message=FALSE, warning=FALSE}
+par(mfrow=c(3,1))
+plot(GA.corr)
+plot(GA.chi)
+plot(GA.forest)
+```
+
+Without penalty results:
+
+
+```{r message=FALSE, warning=FALSE}
+par(mfrow=c(3,1))
+plot(GA.corr.no)
+plot(GA.chi.no)
+plot(GA.forest.no)
+```
+
+As we can see, all the functions get to the best, I must mention that the forest formula throws better results. In terms of how long did it takes to get the best result. We can check out the summary of the results if we can see more information. It is also very interesting to se the fluctuation that we have in the results when we don't apply the penalty.
+
+```{r message=FALSE, warning=FALSE}
+summary(GA.corr)
+summary(GA.chi)
+summary(GA.forest)
+```
+
+
+We can see that, as we saw before the best result is for the forest formula. We can vary different parameters, I want to pay special attention to:
+
+- **popSize**: Population size.
+- **pcrossover**: Probability of crossover between two chrmosomes.
+- **pmutation**: Probability of mutation in a parent chromosome.
+- **elitism**: number of best fitness individuals to survive at each generation
+
+As we know, parameters like popSize or elitism let us get to a better solutions much faster, as we can see below. 
+```{r eval = FALSE}
+fit.data<-reduce(forest, fit.data)
+GA.forest.20<-ga("binary", fitness= fitness.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 20, maxiter = 180, parallel = TRUE)
+GA.forest.200<-ga("binary", fitness= fitness.penalty,  pcrossover=0.8, pmutation=0.1, nBits = ncol(fit.data$train), monitor=FALSE, popSize = 200, maxiter = 180, parallel = TRUE)
+
+```
+```{r echo=FALSE}
+load(file=".datos/20vs200GA.RData")
+```
+```{r}
+par(mfrow=c(2,1))
+plot(GA.forest.20)
+plot(GA.forest.200)
+```
+
+The first graph has a smaller population than the second one. We can check the same for the *elitism* propierty. Finally, I am going to check the variance in the result changing the pcrossover and the pmutation parameter. In order to focus on this parameter we will set the reset to the values shown.
+```{r echo=FALSE}
+load(file=".datos/exec-ge-pmut-pcross-comb.RData")
+```
+
+```{r eval=FALSE}
+dataformulas <- c(res.cor, chi, forest)
+pcrossover <- c(0.1,0.3,0.5,0.7,0.9)
+pmutation <- c(0.1,0.3,0.5,0.7,0.9)
+
+
+compute.iter <- function(pcross.list, pmutat.list, penalty = "YES", type="forest"){
+valores <- c()
+model <- c()
+mut <- c()
+cross<- c()
+
+combit<- list(model = model, valores = valores, pmut = mut, pcross = cross)
+
+if(type=="forest"){
+  fit.data<-reduce(forest, fit.data)
+}else if(type=="chi"){
+  fit.data<-reduce(chi, fit.data)
+}else{
+  fit.data<-reduce(corr, fit.data)
+}
+  for (n in 1:length(pcross.list)) {
+    for (m in 1:length(pmutat.list)) {
+      if(penalty =="YES"){
+    combit$model<- c(combit$model, ga("binary", fitness= fitness.penalty,  pcrossover=pcrossover[n], pmutation=pmutation[m], nBits = ncol(fit.data$train), monitor=FALSE, popSize = 20, maxiter = 50, parallel = TRUE))
+      }else{
+        combit$model<- c(combit$model, ga("binary", fitness= fitness.no.penalty,  pcrossover=pcrossover[n], pmutation=pmutation[m], nBits = ncol(fit.data$train), monitor=FALSE, popSize = 20, maxiter = 50, parallel = TRUE))
+      }
+      print(m)
+      combit$pmut <- c(combit$pmut, pmutat.list[m])
+      combit$pcross <- c(combit$pcross, pcross.list[n])
+      combit$valores<- c(combit$valores, mean(plot(combit$model[[length(combit$model)]])$`mean`))
+    }
+  }
+
+  return(combit)
+}
+
+res.yes.for <- compute.iter(pcrossover, pmutation, "YES", "forest")
+res.yes.chi <- compute.iter(pcrossover, pmutation, "YES", "chi")
+res.yes.cor <- compute.iter(pcrossover, pmutation, "YES", "corr")
+
+res.no.for <- compute.iter(pcrossover, pmutation, "NO", "forest")
+res.no.chi <- compute.iter(pcrossover, pmutation, "NO", "chi")
+res.no.cor <- compute.iter(pcrossover, pmutation, "NO", "corr")
+
+```
+
+Once we have all the combination executed, we can analyze them.
+
+```{r eval=FALSE}
+library(ggplot2)
+library(cowplot)
+library(reshape)
+
+p1<-ggplot(melt(matrix(res.yes.for$valores, ncol=5)), aes(X1, X2, fill = value)) + geom_tile() + 
+scale_fill_gradient(low = "blue",  high = "yellow")
+p2<-ggplot(melt(matrix(res.yes.chi$valores, ncol=5)), aes(X1, X2, fill = value)) + geom_tile() + 
+scale_fill_gradient(low = "blue",  high = "yellow")
+p3<-ggplot(melt(matrix(res.yes.cor$valores, ncol=5)), aes(X1, X2, fill = value)) + geom_tile() + 
+scale_fill_gradient(low = "blue",  high = "yellow")
+
+p11<-ggplot(melt(matrix(res.no.for$valores, ncol=5)), aes(X1, X2, fill = value)) + geom_tile() + 
+scale_fill_gradient(low = "blue",  high = "yellow")
+p12<-ggplot(melt(matrix(res.no.chi$valores, ncol=5)), aes(X1, X2, fill = value)) + geom_tile() + 
+scale_fill_gradient(low = "blue",  high = "yellow")
+p13<-ggplot(melt(matrix(res.no.cor$valores, ncol=5)), aes(X1, X2, fill = value)) + geom_tile() + 
+scale_fill_gradient(low = "blue",  high = "yellow")
+
+plot_grid(p1,p2,p3,p11,p12,p13,ncol = 3)
+
+```
+
+```{r echo=FALSE}
+load(file=".datos/saved-plot-grid.RData")
+saved.plot.grid
+```
+
+
+X1 regard the different pcrossover values, while X2 the pmutation value. The values that we have in the graph, are the result of mean of the means, that we have on each combination of crossover and mutation. We can see several things in this graph that are very interesting.
+
+- We have smaller values for the non.penalty function than for the penalty one. As expected. Without penalty, the formulas obtained may be larger than the one we get on the penalty. And the difference of having more variables explains the difference between this results. 
+
+- It is hard to find a rule that fits all this situations. For example, we can see that for the non-penalty results we get better results for lower values of pmutation and pcrossover. In contrast, for the penalty results we get that none of the different "formulas" follow the same distribution in it's results.
+
+
+**Analyze	different	executions	of	the	algorithms	to	see	if	the	same	variables are	obtained	in	each	run,	or	at	least	which	are	the	most	frequent	ones.**
+
+
+First of all, I need to get the different variables that were selected in the GA.
+
+```{r eval=FALSE}
+
+model.2.data.frame<-function(matrix.model){
+  df <- data.frame()
+  for (i in 1:length(matrix.model$model)) {
+    var<-summary(matrix.model$model[[i]])$solution
+    df<-rbind(df, var)
+  }
+  return(df)
+}
+
+res.chromosome.for <- model.2.data.frame(res.yes.for)
+res.chromosome.chi <- model.2.data.frame(res.yes.chi)
+res.chromosome.cor <- model.2.data.frame(res.yes.cor)
+
+res.chromosome.no.for <- model.2.data.frame(res.no.for)
+res.chromosome.no.chi <- model.2.data.frame(res.no.chi)
+res.chromosome.no.cor <- model.2.data.frame(res.no.cor)
+
+df1 <- colSums(rbind(res.chromosome.for,res.chromosome.chi, res.chromosome.cor,res.chromosome.no.for, res.chromosome.no.chi, res.chromosome.no.cor ))
+
+
+most.frequent.variables <- names(df1)[order(df1, decreasing=TRUE)][1:20]
+
+most.frequent.variables
+```
+
+```{r echo=FALSE}
+load(file=".datos/most-freq-var.RData")
+most.frequent.variables
+```
+
+
+We can also do the same for the different formulas and check which is the most repeated variables in the same way.
+
+Here we have the most repeated variables for the penalty fitness function over different combinations of pcrossover and pmutation.
+
+
+```{r eval=FALSE}
+most.rep.for <- names(colSums(res.chromosome.for))[order(colSums(res.chromosome.for), decreasing=TRUE)][1:20]
+most.rep.chi <- names(colSums(res.chromosome.chi))[order(colSums(res.chromosome.chi), decreasing=TRUE)][1:20]
+most.rep.cor <- names(colSums(res.chromosome.cor))[order(colSums(res.chromosome.cor), decreasing=TRUE)][1:20]
+
+most.rep.for
+most.rep.chi
+most.rep.cor
+
+
+
+save(most.rep.chi, most.rep.cor, most.rep.for, file=".datos/rep-YES-penalty.RData")
+
+```
+```{r echo=FALSE}
+load( file=".datos/rep-YES-penalty.RData")
+most.rep.for
+most.rep.chi
+most.rep.cor
+cat("\nFOEST variables appearance in CHI", table(most.rep.for %in% most.rep.chi)["TRUE"], "\nFOEST variables appearance in CORRELATION", table(most.rep.for %in% most.rep.cor)["TRUE"], "\nCHI variables appearance in CORRELATION", table(most.rep.chi %in% most.rep.cor)["TRUE"])
+
+```
+
+And finally, the most repeated variables for the non penalty fitness function over different combinations of pcrossover and pmutation
+
+
+```{r eval=FALSE}
+most.rep.no.for <- names(colSums(res.chromosome.no.for))[order(colSums(res.chromosome.no.for), decreasing=TRUE)][1:20]
+most.rep.no.chi <- names(colSums(res.chromosome.no.chi))[order(colSums(res.chromosome.no.chi), decreasing=TRUE)][1:20]
+most.rep.no.cor <- names(colSums(res.chromosome.no.cor))[order(colSums(res.chromosome.no.cor), decreasing=TRUE)][1:20]
+
+most.rep.no.for
+most.rep.no.chi
+most.rep.no.cor
+
+
+
+save(most.rep.no.for, most.rep.no.chi, most.rep.no.cor, file=".datos/rep-NO-penalty.RData")
+
+```
+```{r echo=FALSE}
+load( file=".datos/rep-NO-penalty.RData")
+most.rep.no.for
+most.rep.no.chi
+most.rep.no.cor
+
+cat("\nFOEST variables appearance in CHI", table(most.rep.no.for %in% most.rep.no.chi)["TRUE"], "\nFOEST variables appearance in CORRELATION", table(most.rep.no.for %in% most.rep.no.cor)["TRUE"], "\nCHI variables appearance in CORRELATION", table(most.rep.no.chi %in% most.rep.no.cor)["TRUE"])
+```
+
+
+We can find big differences between all the results obtained. I have decided to check the general variables obtained in order to see the repeated variables that we have. In this case, I can just tell that the variables show in the general results are the ones that optimizes the result for the GA algorithm. It is very interesting to see this difference along the different formulas.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

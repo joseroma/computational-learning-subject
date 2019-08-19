@@ -1,0 +1,392 @@
+---
+title: "Hierarchical clustering + SOM"
+author:
+- name: Jose Rodr?guez Maldonado
+  affiliation: Practice 1. Part 1 & Part 2. Computational learning
+  email: jrmaj0a@uma.es
+date: "Octubre de 2018"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(kohonen)
+library(gridExtra)
+library(reshape2)
+library(cluster)
+library(ggplot2)
+library(factoextra)
+library(NbClust)
+```
+
+#Part 1: Hierarchical clustering
+## Herachical clustering
+
+I am going to start this practice talking a bit about the shilouette value. It's a measure of how similar an object is to its own cluster (cohesion) compared to other clusters (separation).
+
+The silhouette ranges are [-1,1], where a high value indicates that the object is well matched to its own cluster and poorly matched to neighboring clusters.
+
+The silhouette can be calculated with any distance metric, such as the Euclidean distance.
+
+
+###Perform hierarchical clustering
+
+
+We start reading the data frame.
+```{r}
+data.frame <- read.csv("datos1.csv", header=TRUE, sep= ";", dec=",")
+kable(data.frame[1:10,]) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Now, we are going to try different clustering types:
+
+- Avarage
+- Complete
+- Single
+
+Also, we are going to try different distance metrics. The euclidean, and the ccorrelation 'distance', which is the most common in the microarray studies.
+
+- Correlation
+- Euclidean
+
+```{r}
+#First we are going to scale the data in order to obtain a more reliable result
+data.matrix<-as.matrix(data.frame)
+data.matrix<-data.matrix[,-1]
+data.matrix<-mapply(data.matrix, FUN=as.numeric)
+data.matrix<-matrix(data=data.matrix, ncol=7)
+data.scaled<-scale(data.matrix)
+
+hcut.eu.av <- hcut(dist(data.scaled), k=5, hc_method = "average", hc_metric = "euclidean")
+hcut.eu.comp <- hcut(dist(data.scaled), k=5, hc_method = "complete", hc_metric = "euclidean")
+hcut.eu.sing <- hcut(dist(data.scaled), k=5, hc_method = "single", hc_metric = "euclidean")
+hcut.pea.av <- hcut(dist(data.scaled), k=5, hc_method = "average", hc_metric = "correlation")
+hcut.pea.comp <- hcut(dist(data.scaled), k=5, hc_method = "complete", hc_metric = "correlation")
+hcut.pea.sing <- hcut(dist(data.scaled), k=5, hc_method = "single", hc_metric = "correlation")
+
+```
+
+Here, we can see the different cluster trees obtained.
+
+```{r}
+par(mfrow=c(2,3))
+plot(hcut.eu.av, main="Avarage Euclidean")
+plot(hcut.eu.comp, main="Complete Euclidean")
+plot(hcut.eu.sing, main="Single Euclidean")
+plot(hcut.pea.av, main="Avarage Correlation")
+plot(hcut.pea.comp, main="Complete Correlation")
+plot(hcut.pea.sing, main="Single Correlation")
+
+```
+
+
+
+
+###Silhouette indexes
+
+
+
+```{r}
+
+plot.Silhouette<-function(cluster, data, range){
+  vector.sil<-c()
+  x<-c()
+  if(min(range)<=1){
+    print("NUMBER OF CLUSTERS BIGGER THAN 1")
+    break()
+  }
+  else{
+  for(i in 1:length(range)){
+    cut<-cutree(cluster, k = range[i])
+    #show(table(cut))
+    si4 <- silhouette(cut, daisy(data))
+    vector.sil<-c(vector.sil,mean(si4[,3]))
+    x<-c(x,i)
+  }
+  data<-data.frame(x,vector.sil)
+  
+  }
+  return(data)
+}
+
+
+var.eu<-plot.Silhouette(hcut.eu.av, data.frame, range=2:25)
+var1.eu<-plot.Silhouette(hcut.eu.comp, data.frame, range=2:25)
+var2.eu<-plot.Silhouette(hcut.eu.sing, data.frame, range=2:25)
+var.pea<-plot.Silhouette(hcut.pea.av, data.frame, range=2:25)
+var1.pea<-plot.Silhouette(hcut.pea.comp, data.frame, range=2:25)
+var2.pea<-plot.Silhouette(hcut.pea.sing, data.frame, range=2:25)
+
+ggplot() + 
+  geom_line(data = var.eu, aes(x = x, y = vector.sil, color=vector.sil))+ 
+  geom_line(data = var1.eu, aes(x = x, y = vector.sil, color=vector.sil))+ 
+  geom_line(data = var2.eu, aes(x = x, y = vector.sil, color=vector.sil)) + 
+  geom_line(data = var.pea, aes(x = x, y =vector.sil, color=vector.sil))+ 
+  geom_line(data = var1.pea, aes(x = x, y = vector.sil, color=vector.sil))+
+  geom_line(data = var2.pea, aes(x = x, y = vector.sil, color=vector.sil)) + 
+  xlab('Number of clusters') +
+  ylab('Silhouette value') +
+  scale_color_gradient(low = "green", high = "black")
+
+
+  
+```
+
+The first thing that we can tell about this picture is that we only have 3 different lines in stead of 6, as expected. That occurs because the results that we have for correlation's and for the euclidean's distance is the same. As we can see as follows:
+
+```{r}
+grid.arrange(fviz_silhouette(hcut.eu.av), fviz_silhouette(hcut.pea.av), ncol=1,nrow= 2)
+```
+
+The results are exactly the same:
+```{r}
+var.eu == var.pea
+```
+
+In addition, the result obtained seems to be very low for low number of clusters. So, I have decided to track all the values that the silhouette index has through the different number of clusters.
+
+```{r}
+load(file="savedData/optimalClust.RData")
+```
+
+
+Due to the fact that the results given by the variance are the same as the ones that we can get by the euclidean distance. I have decided to use just one of them.
+
+```{r}
+
+ggplot() + 
+  geom_line(data = data.frame(x=2:473,nb$All.index), aes(x = 2:473, y = nb$All.index), color = "green") +
+  geom_line(data = data.frame(x=2:473,nb1$All.index), aes(x = 2:473, y = nb1$All.index), color = "blue") +
+  geom_line(data = data.frame(x=2:473,nb2$All.index), aes(x = 2:473, y = nb2$All.index), color = "red") +
+  xlab('Number of clusters') +
+  ylab('Silhouette value')
+
+
+```
+
+Here we have a clear example of how does Silouette index works.
+
+We can tell from this picture that choosing a cluster with k=0-20, seems to be the best option. Afterwards, we have better silhouette indexes values, but are caused by the large number of clusters.
+
+We alrredy know that the silhouette index will decrease until a turning point. Then, it will start increasing due to the effect of having too many clusters. In order to choose the best cluster we have to consider more options that just the silhouette index. Such as the number of clusters that we are using.
+
+We can tell that the best results obtained for the silhouette index are the ones calculated by the *average* method. Then, we find the *complete* distance. And finally the *single* distance. 
+
+According to the number of clusters and the silhouette measure I would say that the best clusterizations will be from 5-8 clusters with average linkage.
+
+If we check which is the number of cluster that optimizes the silhouette index, we get:
+
+
+```{r}
+var.eu.alt<-plot.Silhouette(hcut.eu.av, data.frame, range=5:60)
+var1.eu.alt<-plot.Silhouette(hcut.eu.comp, data.frame, range=5:60)
+var2.eu.alt<-plot.Silhouette(hcut.eu.sing, data.frame, range=5:60)
+
+cat("Best cluster K for average:", which.max(var.eu.alt$vector.sil)+5, "\n","Best cluster K for complete:", which.max(var1.eu.alt$vector.sil)+5, "\n","Best cluster K for single:", which.max(var2.eu.alt$vector.sil)+5)
+
+
+```
+ 
+
+```{r}
+
+hcut.av.7 <- hcut(dist(data.scaled), k=7, hc_method = "average", hc_metric = "euclidean")
+hcut.comp.7 <- hcut(dist(data.scaled), k=7, hc_method = "complete", hc_metric = "euclidean")
+hcut.sing.7 <- hcut(dist(data.scaled), k=20, hc_method = "single", hc_metric = "euclidean")
+```
+
+The clusters that we get are the following:
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+p1.1<-fviz_silhouette(hcut.av.7)
+p2.1<-fviz_silhouette(hcut.comp.7)
+p3.1<-fviz_silhouette(hcut.sing.7)
+
+grid.arrange(p1.1, p2.1, p3.1, nrow=3, ncol=1)
+```
+
+
+
+###How good does HC performs for sporulation?
+
+In the case of the sporulation data, K was around 7 (Chu et al. used K = 7) and
+l = 7. Thus our data values are points in the l dimensional Euclidean space. The silhouette index was alrredy telling us that 7 was the best clusterization for this dataset.
+
+If we double check the results obtained before, we can see that the best cluster obtainded round K=7. So I will say that we have a good performance. 
+
+
+#Part 2: SOM + Hierarchical clustering
+
+SOM will be used to represent our data patterns in 2-dimensions. Kohonen networks are very useful because they manage to represent similar features very close. So, similar data are displayed very close in the map.
+
+```{r}
+load(file="savedData/kohonen_reference.RData")
+```
+```{r}
+par(mfrow = c(3, 1))
+plot(kohmap.referencia, type="changes", main="Data SOM: training")
+plot(kohmap.increased.alpha, type="changes", main="Data SOM: training")
+plot(kohmap.incresed.grid, type="changes", main="Data SOM: training")
+```
+
+
+
+We are going to see how dows SOM classification changes if we vary the alpha and the grid. We have alrredy choosed a rlen=80.
+
+```{r}
+kohmap.referencia <- som(scale(data.frame[,2:ncol(data.frame)]), grid = somgrid(7, 6, "hexagonal"), rlen=80, alpha =c(0.08,0.01))
+kohmap.increased.alpha <- som(scale(data.frame[,2:ncol(data.frame)]), grid = somgrid(7, 6, "hexagonal"), rlen=80, alpha =c(0.4,0.1))
+kohmap.incresed.grid <- som(scale(data.frame[,2:ncol(data.frame)]), grid = somgrid(8, 7, "hexagonal"), rlen=80, alpha =c(0.08,0.01))
+
+par(mfrow = c(3, 1))
+plot(kohmap.referencia, type="changes", main="Data SOM: training")
+plot(kohmap.increased.alpha, type="changes", main="Data SOM: training")
+plot(kohmap.incresed.grid, type="changes", main="Data SOM: training")
+```
+
+For this Kohonen maps we have the following results:
+```{r}
+par(mfrow = c(1,3))
+plot(kohmap.referencia, type="codes")
+plot(kohmap.increased.alpha, type="codes")
+plot(kohmap.incresed.grid, type="codes")
+```
+
+This is very strinking, but we have no way we can tell which one is the best. That takes us to the next part. As we saw before we obtain the same results for euclidean an correlatin, so we are going to focus from now on just in euclidean distance in order to simplify.
+
+##Hierarchical Clustering with Connectivity Constains
+
+In order to implement connectivity constrains we have to factor the distance of each cluster to another cluster on the SOM map. Calculate distances on a hexagonal map is not trivial. We are going to use a function that provides the package kohonen for this task.
+
+An object of class dist, which can be directly fed into (e.g.) a hierarchical clustering
+
+```{r}
+
+
+list.kohomap<-list()
+list.kohomap[[1]]<-kohmap.referencia
+list.kohomap[[2]]<-kohmap.increased.alpha
+list.kohomap[[3]]<-kohmap.incresed.grid
+
+k<-7
+
+select.types<-c("average", "complete", "single")
+xclass<-c("reference", "alpha", "sigmoid")
+
+calculate.comb<-function( list.kohomap, k,select.types , xclass){
+  code.dists.list <- sapply(1:length(list.kohomap), function(x) object.distances(list.kohomap[[x]], type = "codes"))
+  # Aqu? se guardan en [[x]] la lista
+  cluster.list <- lapply(1:length(select.types), function(x)
+    sapply(1:length(code.dists.list), function(y) 
+      mean(
+        silhouette(
+          cutree(
+            hclust(code.dists.list[[x]], method = select.types[y])
+            ,k=k)
+          , code.dists.list[[x]])[,3]
+        ) 
+      )
+    )
+  data<-rbind(cluster.list[[1]],cluster.list[[2]],cluster.list[[3]] )
+  colnames(data)<- select.types
+  rownames(data)<- xclass
+  return(data)
+}
+
+
+list.matrix.silhouettes<-calculate.comb(list.kohomap,k,select.types,xclass)
+cat("Results for Silhouette index with k=",k,"\n")
+print(list.matrix.silhouettes)
+
+
+```
+
+Here we can check how does the result chaged due to the variation of the parameters that we set before.
+
+*How much does the result changed by increasing the **alpha** ?*
+
+We can easely see that the increase of the alpha parameter, the average and complete distance results reduces. But surprisingly, it throws better results for the sigle distance, despite is not to hard getting better results. 
+
+*How much does the result changed by increasing the **map cells** ?*
+
+Well, in this case, we get very similar results for every distance. I can just notice small diferences, as expected. This is because in the end we are clustering the same information over the same clusters. The only difference between the inputs of both results is that for the *amplified* map, the information is a bit more spread but nothing else.
+
+If we check this results over the map we will see:
+
+```{r}
+par(mfrow = c(1,3))
+gc = cutree(hcut(dist(kohmap.referencia$codes[[1]])), 7)
+plot(kohmap.referencia, type="codes", bgcol=rainbow(7)[gc])
+gc1 = cutree(hcut(dist(kohmap.increased.alpha$codes[[1]])), 7)
+plot(kohmap.increased.alpha, type="codes", bgcol=rainbow(7)[gc1])
+gc2 = cutree(hcut(dist(kohmap.incresed.grid$codes[[1]])), 7)
+plot(kohmap.incresed.grid, type="codes", bgcol=rainbow(7)[gc2])
+```
+
+I think that it can be very interesting to see the evolution of this result through different clusters to check the conclusions obtained before.
+
+```{r}
+load(file="savedData/matrixSil.RData")
+
+```
+
+First of all we have to extract the data.
+
+```{r}
+list.silhouette.reference<-data.frame()
+list.silhouette.reference<-t(rbind(sapply(1:length(list.matrix.silhouettes), function(i) list.matrix.silhouettes[[i]][1,])))
+list.silhouette.alpha<-data.frame()
+list.silhouette.alpha<-t(rbind(sapply(1:length(list.matrix.silhouettes), function(i) list.matrix.silhouettes[[i]][2,])))
+list.silhouette.sigmoid<-data.frame()
+list.silhouette.sigmoid<-t(rbind(sapply(1:length(list.matrix.silhouettes), function(i) list.matrix.silhouettes[[i]][3,])))
+
+```
+
+Once we have all the data, we can plot it.
+
+
+```{r}
+
+df.ref <- data.frame(id = 1:(length(list.silhouette.reference)/3),
+                list.silhouette.reference)
+df.ref <- melt(df.ref ,  id.vars = 'id', variable.name = 'color')
+p1<-ggplot(df.ref, aes(id,value)) + geom_line(aes(colour = color))
+
+df.alp <- data.frame(id = 1:(length(list.silhouette.alpha)/3),
+                list.silhouette.alpha)
+df.alp <- melt(df.alp ,  id.vars = 'id', variable.name = 'color')
+p2<-ggplot(df.alp, aes(id,value)) + geom_line(aes(colour = color))
+
+df.sig <- data.frame(id = 1:(length(list.silhouette.sigmoid)/3),
+                list.silhouette.sigmoid)
+df.sig <- melt(df.sig ,  id.vars = 'id', variable.name = 'color')
+p3<-ggplot(df.sig, aes(id,value)) + geom_line(aes(colour = color))
+
+grid.arrange(p1, p2, p3, nrow = 3)
+```
+
+
+In this plot, firstly we have de kohmap clusterization that we use as the reference. Then, the one where we changed the alpha parameter. And finally, we have the one where we increased the *sigmoid*. In every plot, each line corresponds to a different distance metric.
+
+In the end, in this graph we can check the conclustions presented before. But we can also see that we are obtaining specially good results when we change the sigmoid parameter.
+
+If we compare this results with the ones that we obtained before, just using hierarchical clustering. We can see a significant increase in the results. As expected, we are having best clusterizations if we apply before hierarchical clutering SOM. 
+
+As expected, we can tell that applying SOM before hierarchical clustering improves the performance of hierarchical clustering. Also, we have seen that the alpha parameter is very important and adjusting it correctly is very important in order to have a good performance of the clusters. 
+
+
+#Comparison with paper's conclusion
+
+Despite the fact that we can get good result's just applying hierarchical clustering, we have seen that they can be improved using before SOM. 
+
+In the paper says that , the performance of correlation-based hierarchical clustering and model-based clustering (is what we do in SOM) appear to
+be on opposite extremes, depending on what validation measure one employs. Which means that for this case the results obtained can change drastically by using another validation method, in stead of the silhouette index.

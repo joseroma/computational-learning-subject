@@ -1,0 +1,633 @@
+---
+title: "Survival analysis"
+author: "José Rodríguez Maldonado"
+date: "January 2019"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: simplex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(kableExtra)
+library(survival)
+library(survminer)
+library(dplyr)
+library("hier.part")
+library(GGally)
+library("nnet")
+library("pROC")
+library("caret")
+library("NeuralNetTools" )
+```
+
+## Part 1
+
+1- Analyze	your	data	set	assigned,	and	compute	survival	curves	using	the	Cox	regression	model.	Divide	your	data	according	to	a	relevant	covariate		in	two	groups	of	similar	size	(like:	Age	>	60,	Age	>=60).	Analyze	for	these	two	groups	the	differences	in	survival	and the	influence	that	the	Cox	model	assigns	to	each	covariate.	Use	your	fitted	Cox	model	to	do	survival	predictions	for	both	groups	and	for	individual	patients.
+
+I am going to use the *lung* data set that we can find in the **survival** package. Consist of the following parameters:
+
+- inst: Institution code
+- time: Survival time in days
+- status: censoring status 1=censored, 2=dead
+- age: Age in years
+- sex: Male=1 Female=2
+- ph.ecog: ECOG performance score (0=good 5=dead)
+- ph.karno: Karnofsky performance score (bad=0-good=100) rated by physician
+- pat.karno: Karnofsky performance score as rated by patient
+- meal.cal: Calories consumed at meals
+- wt.loss: Weight loss in last six months
+```{r message=FALSE, warning=FALSE}
+
+ggpairs(lung, title = "Scatterplot Matrix of the Features of the Lung Data Set")
+```
+
+```{r}
+df<-lung
+kable(df[1:10,]) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+Then, I am going to stratify the columns that we want to study. In my case, I have decided to use:
+
+- Age at 60, as suggested before.
+- Sex
+- Weight loss. We will divide two groups, lose weight and gain weight.
+
+I am going to stratify the data with the function *cut*. The we can check if the different groups have similar size.
+
+```{r}
+df$age <- cut(as.numeric(df$age),breaks= c(0,60,100))
+df$wt.loss[is.na(df$wt.loss)]<-mean(df$wt.loss, na.rm = TRUE)
+df$wt.loss <- cut(df$wt.loss,breaks= c(min(df$wt.loss), 0,max(df$wt.loss, na.rm = TRUE)))
+df$sex <- factor(df$sex)
+kable(table(df$age))
+kable(table(df$sex))
+kable(table(df$wt.loss))
+```
+
+
+As we can see the groups have similar size. Now, we start the survival analysis. First of all, we are going to check the survival curves for the variables selected.
+
+
+```{r}
+fit.sex<-survfit(Surv(time, status) ~ df$sex, data=df) 
+fit.age<-survfit(Surv(time, status) ~ df$age, data=df) 
+fit.wt<-survfit(Surv(time, status) ~ df$wt.loss, data=df) 
+splots <- c()
+
+splots[[1]] <- ggsurvplot(fit.age, conf.int = TRUE, censor= TRUE, cex.axis=3, cex.lab=3.0, main="Survival curve Age grouping", pval = TRUE)
+splots[[2]] <- ggsurvplot(fit.sex, conf.int = TRUE, censor= TRUE, cex.axis=3, cex.lab=3.0, main="Survival curve grade grouping", pval = TRUE)
+
+arrange_ggsurvplots(splots, print = TRUE, ncol =2, nrow = 1, risk.table.height = 1)
+
+
+```
+
+
+Here we can see the results of the survival curves for each variable. We notice that the p-value obtained for sex is much smaller than the one obtained for the age. This means that the sex the age is more important for the desease determination. In order to see if the age is an important parameter, we are going to check in each group created by sex and check if the *age* is important.
+
+
+```{r}
+fit_df<-survfit(Surv(time, status) ~ sex, data=df) 
+ggsurvplot_facet(fit_df, df, facet.by = "age", palette = "age", pval = TRUE)
+```
+
+And we get that for ages bigger than 60 years, the parameter *sex* can distinguish two different groups quite good.
+
+```{r}
+ggsurvplot(fit.wt, conf.int = TRUE, censor= TRUE, cex.axis=3, cex.lab=3.0, main="Survival curve grade grouping", pval = TRUE)
+```
+
+We can also see that the groups that we have set before for the weight loss are not very good. The stratification produces very similar survival curves, which means that it is not a important parameter.
+
+
+
+ Now, we are going to check the results of the cox fitted model. We need a train a test set as well. I am going to use just the variables age and sex.
+
+```{r message=FALSE, warning=FALSE, paged.print=TRUE}
+train <- sample_frac(tbl = lung, replace = FALSE, size = 0.85)
+test <-anti_join(lung, train)
+
+cox.age<-coxph(Surv(time, status) ~ age , data = train,x=TRUE)
+summary(cox.age)
+```
+
+```{r}
+cox.sex<-coxph(Surv(time, status) ~ sex , data = train)
+summary(cox.sex)
+```
+
+We have found a strong indication of a difference between the two groups. As we can see, the variable sex has a higher statistical significance (z parameter) coefficients that age. That confirms what we alrredy saw in the survival curve. 
+
+
+We can also see in the exponential parameter that the hazard increase as we increase the age. And, also that females has less hazard than mens.
+
+We can check over the different parameters that we have in order to find which is the best combination of variables. Here we can see an exhaustive search where we keep only the variable combinations that fit the proportionality rule.
+
+
+```{r eval=FALSE}
+
+
+
+getExhModelVariabCount <- function(data, indep.var){
+  formula<-c()
+  pvalue<-c()
+  full.data <- data
+  survival.time <- subset(data,select=c("time", "status"))
+  data$time <- NULL
+  data$status <- NULL
+  
+  names.data <- names(data)
+  indice.matriz <- combos(length(names(data)))
+  num.var<-c()
+  
+  for(ind in 1:nrow(indice.matriz$binary)){
+    ec.pasag <-paste(colnames(data)[indice.matriz$ragged[ind,]])
+    
+    ec.indep <- indep.var
+    ec.final <- as.formula(paste(ec.indep, paste(ec.pasag, collapse="+"), sep=" ~ "))
+    cox.data.norm<-coxph(ec.final, data = full.data)
+    cox.zph<-cox.zph(cox.data.norm)
+    if(cox.zph$table[nrow(cox.zph$table),][3]>0.05){
+      
+      formula<-c(formula, as.character(paste(ec.indep, paste(ec.pasag, collapse="+"), sep=" ~ ")))
+      num.var<-c(num.var, length(colnames(data)[indice.matriz$ragged[ind,]]))
+      pvalue<-c(pvalue,summary(cox.data.norm)$logtest["pvalue"])
+    
+    }
+    
+  }
+  dat.resul<-data.frame(formula, pvalue, num.var)
+  return(dat.resul)
+}
+
+res.fil <- getExhModelVariabCount(df, "Surv(time,status)")
+```
+
+We can easely choose the combination of variables that we want with the results obtained. We get a matrix a bit hard but with small modifications we can get to something like this.
+
+```{r eval=FALSE}
+res.fil.ord <-sapply(1:max(res.fil$num.var), function(x)
+    list(toString(res.fil[res.fil$num.var==x,][which.min(res.fil[res.fil$num.var==x,]$pvalue),]$formula ),
+      res.fil[res.fil$num.var==x,][which.min(res.fil[res.fil$num.var==x,]$pvalue),]$pvalue ,x)  )
+
+```
+```{r echo = FALSE}
+load(file=".datos/datos_ordenados_formulas.RData")
+```
+
+```{r}
+kable(t(res.fil.ord)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+Here we have very interesting results. The first thing that strikes us is that ph.ecog seems to be a very interesting variable. 
+```{r =FALSE}
+cox.ecog<-coxph(Surv(time, status) ~ ph.ecog , data = train)
+summary(cox.ecog)
+```
+
+
+We can see, checking the parameters referred before, this variable has very similar results as the ones that we obtained before for sex. I am going to choose the formula with three variables for the cox model that we are going to use for prediction.
+
+
+The Cox model does not estimate the baseline hazard, and therefore we cannot directly obtain survival probabilities from it. To achieve that we need to combine it with a non-parametric estimator of the baseline hazard function. The most popular method to do that is to use the Breslow estimator. For a fitted Cox model from package survival these probabilities are calculated by function  survfit().
+
+
+Here we have some information of the cox model that we trained:
+
+
+```{r }
+cox.full<-coxph(Surv(time,status)~inst+sex+ph.ecog , data = train)
+
+ggforest(cox.full)
+```
+
+```{r}
+
+res.sex.1 <- survfit(cox.full,newdata=test[test$sex==1,])
+res.sex.2 <- survfit(cox.full,newdata=test[test$sex==2,])
+
+summ.1 <- summary(res.sex.1, times = 100)
+summ.2 <- summary(res.sex.2, times = 100)
+
+out1 <- t(rbind(summ.1$surv, summ.1$lower, summ.1$upper))
+out2 <- t(rbind(summ.2$surv, summ.2$lower, summ.2$upper))
+```
+
+To obtain the corresponding lower and upper limits of the corresponding 95% confidence intervals, we need to manually extract them from the output of summary().
+```{r echo=FALSE}
+load(file=".datos/out_rest.RData")
+```
+
+```{r}
+
+colnames(out1) <- c("Surv_Prob", "Lower", "Upper")
+kable(out1) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+colnames(out2) <- c("Surv_Prob", "Lower", "Upper")
+kable(out2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+To check if the results are similar to the "real" ones, we just have to train the survfit with the full formula in stead of the cox.model and see the results for the same time.
+
+```{r}
+res.sex.real.1 <- survfit(Surv(time,status)~1,test[test$sex==1,])
+res.sex.real.2 <- survfit(Surv(time,status)~1,test[test$sex==2,])
+
+summ.real.1 <- summary(res.sex.real.1, times = 100)
+summ.real.2 <- summary(res.sex.real.2, times = 100)
+
+```
+
+
+This way we get the mean of the survival values for the patients that we have specified. Now, we can do the mean to the results that we get before and see if it's similar and also check if any patient have this mean out of his confidence interval.
+
+```{r}
+
+cat("Predicted sex == 1 survival: ", mean(summ.1$surv[1,], na.rm = TRUE), "\nReal sex == 1 survival:  ",summ.real.1$surv,
+    "\nPredicted sex == 2 survival: ", mean(summ.2$surv[1,], na.rm = TRUE), "\nReal sex == 2 survival:  ",summ.real.2$surv)
+```
+
+As we can see, the patients with sex == 2 have a predicted survival worse than the real one. I think that this occurs because we have less sex = 2 patients due to the test data we select. If we check the confidence intervals in order to see how many sex = 2 patiens are outliers.
+```{r echo=FALSE}
+load(file=".datos/res_lail.RData")
+```
+
+```{r}
+cat("Outliers patients for sex = 1 \n")
+outliers <- out1[out1[,2] > summ.real.1$surv || out1[,3]< summ.real.1$surv, ]
+kable(outliers) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+cat("Outliers patients for sex = 2 \n")
+outliers1 <- out2[out2[,2] > summ.real.2$surv || out2[,3]< summ.real.2$surv, ]
+kable(outliers1) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+As we can see, the predictions obtained for sex = 1 are very good. In contrast, the predictions that we have done for sex = 2, are really bad. This may occur because the variables that we are using for the predictions are enough good for sex = 1, but for sex = 2, we may need more variables in order to bring closer the prediction results to the real ones.
+
+Now we move on to the second part of the practice.
+
+
+##Part 2
+
+Train	a	Feed	Forward	Neural	Network	to	make	survival	predictions	(consider	replicating	the	data	in different	intervals	in	order	that	the	output	approximate	a	the	survival	probability	),	choosing	the	adequate	architecture	and	adjusting	the	set	of	parameters	(comment	on	the	decisions	taken).	Use	a	method	to	avoid	overfitting	effects.	Compute	survival	curves/prediction	for	the	two	groups. (You	can	focus	on
+the	survival	probabilites	as	a	function	of	time	or	on	point	predictions	at	a	given	specified	time	(i.e.	24	months)).
+
+
+We are going to start replicating the data.
+
+```{r eval=FALSE}
+
+
+replicate.cum <- function(step, data){
+  data.cum <- data.frame()
+  i<-1
+  for( i in 1:length(data[,1])){
+    linea <- data[i,]
+    for( j in seq(0, mean(data$time)+200, by=step)){
+      lin <- linea
+      if(linea$time>j){
+        if(linea$status==2){
+          lin$time <- j
+          lin$status <- 1
+        }else{
+          lin$time <- j
+          lin$status <- 2
+        }
+        
+      }else{
+        lin$time <- j
+        lin$status <- 2
+      }
+      data.cum <- rbind(data.cum, lin)
+    }
+  }
+  return(data.cum)
+}
+data.cum <- replicate.cum(5,df)
+
+
+```
+ 
+Why do we replicate the data?
+
+
+This allows a straightforward modeling of time-dependent explanatory variables. For each subject, the output is the estimated conditional probability of the occurrence of an event as a function of the time interval and covariate patterns. This is very importante because we can estimate a survival function based on the hazard.
+
+Why network outputs are estimated probabilities?
+
+When we train a neural network, the outputs of the network are compared to the targets,which are observed responses. The weights of the network are adjusted iteratively, based on this comparison, until an appropriate error function is minimized, as we saw in class.
+
+The negative logarithm of the likelihood function (that can be written in several forms) resembles the forms of an error function used in training networks. So, the outputs of a neural network actually correspond to certain estimators of certain likelihood functions.
+
+For a right censored survival data set with n observations, the likelihood function can be obtained by equation. The term -2log(L)corresponds to the cross-entropy error function, which canbe applied in a neural network for binary classification problems. Therefore, if the target yik in a neural network is the survival status of a subject i, 1 for death and 0 for survival, then the output is the **estimated instant death risk**.
+
+
+```{r echo=FALSE}
+load(file=".datos/data-cum.RData")
+```
+
+Prior to ANN construction we first must split the lung-cummulative data set into test and training data sets. And scale the dataset.
+
+```{r eval=FALSE}
+set.seed(7) 
+
+
+for(i in 1:ncol(data.cum)){
+  data.cum[is.na(data.cum[,i]), i] <- mean(data.cum[,i], na.rm = TRUE)
+}
+
+#Scaling
+
+data.cum$inst <-scale(data.cum$inst)
+data.cum$ph.ecog <-scale(data.cum$ph.ecog)
+data.cum$ph.karno <-scale(data.cum$ph.karno)
+data.cum$pat.karno <-scale(data.cum$pat.karno)
+data.cum$meal.cal <-scale(data.cum$meal.cal)
+
+cum.train <- sample_frac(tbl = data.cum, replace = FALSE, size = 0.9975)
+cum.test <- anti_join(data.cum, cum.train)
+
+```
+
+
+For the neural network architecture we are going to check different parameters:
+
+- Size: number of units in the hidden layer.
+- Decay: parameter for weight decay.
+
+It is very important to specify in our nnet functions the parameters `softmax = TRUE` and `entropy = TRUE`. Because otherwise we won't be using the loss function specified before to get the **estimated instant death risk**.
+
+In order to choose the best architecture, we will set all the parameters to static values and change just 1 at a time. We will start with the size, then the decay and finally the rang.
+
+###Choose a hidden layer architecture
+
+In class we have been told to use the `nnet package`. This package is used to create Feed-forward neural networks with a single hidden layer. So the question that we need to answer in this part turned up to be much easyer. 
+
+**How many neurons do we want in our hidden layer?**
+
+```{r echo =FALSE}
+load(file=".datos/data-cum-tt.RData")
+```
+
+
+```{r eval=FALSE}
+set.seed(7)
+
+num.neurons <- c(1,2,3,5,8,10,14,15,16,17,18,22,26,32, 34, 38, 40)
+
+test.10.k.params <- function(formula, datos, num.neurons){
+  auc.result<-c()
+  folds <- createFolds(datos$time, k=10)
+  restraining <- list();
+  restest <- list();
+  for(i in 1:10){
+    testData <- datos[unlist(folds[i]), ]
+    trainData <- datos[-unlist(folds[i]), ]
+    clust.model<-nnet(formula,size=num.neurons,data=trainData, softmax = TRUE, entropy = TRUE)
+    predict.model.clust<-predict(clust.model, testData, type = "class")
+    roc.curve <-roc(testData$Y[,"1"], as.numeric(predict.model.clust), smooth=FALSE, auc=TRUE)
+    auc.result <-c(auc.result, roc.curve$auc)
+  }
+  return(auc.result)
+}
+
+data.cum.params<-data.cum
+data.cum.params$status <- NULL
+data.cum.params$Y <- class.ind(data.cum$status)
+#Con esto que esta´calculamos lo bien que predice.
+
+means.val.size <- c()
+for(i in 1:length(num.neurons)){
+  tot <-test.10.k.params(formula = Y~., data.cum.params , num.neurons = num.neurons[i])
+  means.val.size <- c(means.val.size, mean(tot))
+}
+
+means.val.size <- cbind(means.val.size, num.neurons)
+
+```
+
+We get that:
+```{r echo=FALSE}
+load(file=".datos/means-val-size.RData")
+```
+
+```{r}
+
+kable(means.val.size) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+According to the results obtained in the 10 k-fold validation, the most appropiate size for our network seems to be 15 neurons. From now on I will keep the size parammeter to 15.
+
+###Choose weight decay to avoid overfitting
+
+```{r eval=FALSE}
+set.seed(7)
+
+decay.list <- c(0.0001,0.001,0.01,0.1,1,10)
+
+
+test.10.k.params.decay <- function(formula, datos, decay.list){
+  auc.result<-c()
+  folds <- createFolds(datos$time, k=10)
+  restraining <- list();
+  restest <- list();
+  for(i in 1:10){
+    testData <- datos[unlist(folds[i]), ]
+    trainData <- datos[-unlist(folds[i]), ]
+    clust.model<-nnet(formula,size=15,data=trainData, softmax = TRUE, entropy = TRUE, decay = decay.list)
+    predict.model.clust<-predict(clust.model, testData, type = "class")
+    roc.curve <-roc(testData$Y[,"1"], as.numeric(predict.model.clust), smooth=FALSE, auc=TRUE)
+    auc.result <-c(auc.result, roc.curve$auc)
+  }
+  return(auc.result)
+}
+
+
+#Con esto que esta´calculamos lo bien que predice.
+
+means.val.decay <- c()
+for(i in 1:length(decay.list)){
+  tot <-test.10.k.params.decay(formula = Y~., data.cum.params , decay.list = decay.list[i])
+  means.val.decay <- c(means.val.decay, mean(tot))
+}
+
+means.val.decay <- cbind(means.val.decay, decay.list)
+
+```
+```{r echo = FALSE}
+load(file=".datos/means-val-decay.RData")
+```
+
+```{r}
+
+kable(means.val.decay) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+
+According to the results we have. I choose a decay of 0.01.
+
+Once we clarify the hyperparameters that we are going to use, we move on to the next part. Now, we are going to compute	survival	curves/prediction	for	the	two	groups.
+
+
+###Survival curve prediction
+
+First of all we have to prepare the data. I thought that it would be very interesting to use the whole lung data frame as test. So the train would be the replicated data, and the test would be all the patients from lung dataset that we can find in the replicated data.
+
+```{r eval=FALSE}
+#Divide in train and test
+train.data<- setdiff(data.cum, lung)
+test.data <- lung
+
+#Prepare data for prediction
+train.data$Y <- class.ind(train.data$status)
+train.data$status <- NULL
+
+test.data$Y <- class.ind(test.data$status)
+test.data$status <- NULL
+
+#Replacing missing values
+for(i in 1:ncol(train.data)){
+  train.data[is.na(train.data[,i]), i] <- mean(train.data[,i], na.rm = TRUE)
+}
+for(i in 1:ncol(test.data)){
+  test.data[is.na(test.data[,i]), i] <- mean(test.data[,i], na.rm = TRUE)
+}
+
+#Scaling
+
+train.data$inst <-scale(train.data$inst)
+train.data$ph.ecog <-scale(train.data$ph.ecog)
+train.data$ph.karno <-scale(train.data$ph.karno)
+train.data$pat.karno <-scale(train.data$pat.karno)
+train.data$meal.cal <-scale(train.data$meal.cal)
+
+test.data$inst <-scale(test.data$inst)
+test.data$ph.ecog <-scale(test.data$ph.ecog)
+test.data$ph.karno <-scale(test.data$ph.karno)
+test.data$pat.karno <-scale(test.data$pat.karno)
+test.data$meal.cal <-scale(test.data$meal.cal)
+
+
+```
+
+Now, we are going to train the model with the hyperparameters chosen before. 
+
+```{r eval=FALSE}
+clust.model<-nnet(Y~inst+sex+ph.ecog+time,size=15,data=train.data, softmax = TRUE, entropy = TRUE, decay = 0.01)
+predict.model.clust<-predict(clust.model, test.data, type = "raw")
+
+```
+
+We have the following neural network.
+
+```{r echo=FALSE}
+load(file=".datos/nnet.RData")
+```
+
+```{r}
+
+
+plotnet(clust.model, max_sp=TRUE)
+
+```
+
+```{r echo=FALSE}
+load(file=".datos/predictedModel.RData")
+```
+
+Here I leave the results obtained for the prediction. We have to columns. In each column we have the probability of the status wether to be 1 or 2. As we can see.
+```{r}
+
+kable(predict.model.clust[1:10,]) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+With some small transformations we can get our predicted survival curve.
+```{r eval=FALSE}
+
+dat.res <- cbind(predict.model.clust, test.data$time, test.data$sex, test.data$inst, test.data$ph.ecog)
+colnames(dat.res)<-c("1", "2", "time", "sex", "inst", "ph.ecog")
+dat.res <- data.frame(dat.res)
+dat.order.res <- dat.res[order(dat.res$time), ]
+for(i in 1:length(dat.res[,1])){
+  if(dat.order.res$X1[i]>dat.order.res$X2[i]){
+    dat.order.res$status[i]<-0
+  }else{
+     dat.order.res$status[i]<-1
+  }
+}
+
+```
+
+```{r echo=FALSE}
+load(file=".datos/primer-resul.RData")
+```
+
+```{r}
+
+fit.sex<-survfit(Surv(time, status) ~ sex, data=df) 
+fit.sex.nnet.pred<-survfit(Surv(time, status) ~ sex, data=dat.order.res)
+
+splots<-list()
+splots[[1]] <- ggsurvplot(fit.sex, conf.int = TRUE, censor= TRUE, cex.axis=3, cex.lab=3.0, main="Survival curve Age grouping", pval = TRUE)
+splots[[2]] <- ggsurvplot(fit.sex.nnet.pred, conf.int = TRUE, censor= TRUE, cex.axis=3, cex.lab=3.0, main="Survival curve grade grouping", pval = TRUE)
+
+arrange_ggsurvplots(splots, print = TRUE, ncol =2, nrow = 1, risk.table.height = 1)
+```
+
+At the left, we find the "real" survival curves while on the right we have the survival curves that we have predicted with the neural network. As we can see, in the predicted curve, we obtain the same ratio as the real one. I will comment this results in depth later on. 
+
+##Part 3
+
+
+Compare	the	results	obtained	using	the	two	models	for	the	two	different	groups	and	extract	conclusions.	Comment	on	your	results	taking	into	consideration	previous	publications	related	to	this	dataset.	Write	a	detailed	report.
+
+To take account of the different results that we are going to talk about. First of all, I will plot the predicted survival curve with the cox model. We have to do the same as we did before, but in stead of just time = 100. We do it for all the times. With the means we get an easy approximation of the survival curve.
+
+```{r message=FALSE, warning=FALSE}
+set.seed(7)
+
+train <- sample_frac(tbl = lung, replace = FALSE, size = 0.70)
+test <-anti_join(lung, train)
+
+cox.full<-coxph(Surv(time,status)~sex, data = train)
+
+ggadjustedcurves(cox.full, data=test, variable="sex")
+
+arrange_ggsurvplots(splots, print = TRUE, ncol =2, nrow = 1, risk.table.height = 1)
+
+```
+
+
+
+
+Here we have the different results obtained in this practice. First of all we have the survival curve generated by the cox.model prediction. At the bottom on the left, we have the "real" survival curve that we generate with the `survfit`. And finally, at the bottom on the right we have the survival curve predicted with neural networks.
+
+First of all, we notice that for the predicted results, no matter coxph or nnet, we have survival curves that are farther between them. The predictions opens much more the difference in the survival curves gap.
+
+Now we get to the key question of the practice.
+
+**Which one would I use, Cox model or Feed-Forward Networks?**
+
+Well, in my experimentation, I think that the results obtained for the nnet model are much better that the other ones. As we can see, the steps that we find in the curve predicted with nnet are very similar to the ones that we have in the real one. That makes me think that this result is much closer to the real one than the one we have for coxph. Despite coxph keeps the space between the curves better. Also, it is important to take into account that the nnet model can be improved while cox not much.
+
+If we match this information with the paper 2 R4, we can follow some guidelines about the results obtained. In the paper the AUC where calculated and t the predictive accuracy of the NN models was significantly better than the one obtained by using Cox regression model.
+
